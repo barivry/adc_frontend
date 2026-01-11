@@ -1,78 +1,26 @@
-┌──────────────────────────────────────────────────────────────┐
-│                            ADC                               │
-│                                                              │
-│   Analog Signal                                               │
-│        │                                                     │
-│        ▼                                                     │
-│   [ ADC Core ]                                               │
-│        │                                                     │
-│        ├── LVDS Data[7:0]  ────────────────────────────┐    │
-│        ├── DCO (Data Clock Output) ───────────────┐    │    │
-│        └── FCO (Frame Clock Output) ───────────┐  │    │    │
-└───────────────────────────────────────────────┼──┼────┼────┘
-                                                │  │    │
-                                                ▼  ▼    ▼
-════════════════════════════ FPGA ═════════════════════════════════
+# ADC LVDS Frontend – SystemVerilog Simulation
 
-====================  ADC CLOCK DOMAIN (dco_clk)  ==================
+This repository contains a SystemVerilog implementation of an ADC LVDS (DDR)
+sample capture frontend, including lane capture, word assembly, alignment
+monitoring, and CDC FIFO.
 
-┌───────────────┐
-│   IBUFDS      │  ← ממיר אות דפרנציאלי לאוט לוגי רכיב שנמצא כבר בתוך הFPGA
-└───────┬───────┘
-        │ 
-        | FCO -אות שעון המסמן את הגבול של כל מילה או דגימה
-        | DCO - עצמו ADCשעון יוצא מה
-┌─────────────────────────────┐
-│   DDR Lane Capture (IDDR)   │  ← דגימה בעלייה + בירידה
-│  IN: lvds_data[7:0],dco_clk,|
-|   rst_n                     │
-│  OUT: lane i:               │
-│      ├─ bit_rise[i]         │
-│      └─ bit_fall[i]         │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│   Deskew / Bitslip Control  │  ← תיקון פאזה דיגיטלי
-│                             │
-│   swap_edges[i]             │
-│   bitslip[i]                │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│     Word Assembler          │
-│                             │
-│  word[2*i]   = bit_rise[i]  │
-│  word[2*i+1] = bit_fall[i]  │
-│                             │
-│  sample[13:0] = ADC sample  │
-│  [15:14] = 0                │
-└──────────────┬──────────────┘
-               │
-               │ sample_word[15:0]
-               ▼
-┌─────────────────────────────┐
-│  FCO Alignment Monitor      │  ← בדיקת יישור מילים
-│                             │
-│                             │
-│                             │
-│                             │
-│  outputs:                   │
-│   aligned                   │
-│   align_err_cnt             │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│    Async FIFO (CDC)         │  
-│                             │
-│  write_clk = dco_clk        │
-│  read_clk  = sys_clk        │
-│                             │
-│  protects from metastability│
-└──────────────┬──────────────┘
-               │
-               │ data stream
-               ▼
+## Requirements
+- Linux
+- Icarus Verilog (`iverilog`)
+- vvp
 
+
+
+## How to Run the Testbench 
+
+### Compile and Run
+
+iverilog -g2012 -Wall -o sim/sim_top \
+  tb/tb_adc_frontend_top.sv \
+  rtl/ddr_lane_capture.sv \
+  rtl/word_assembler.sv \
+  rtl/align_monitor_fco.sv \
+  rtl/cdc_async_fifo.sv \
+  rtl/adc_lvds_frontend_top.sv
+
+vvp sim/sim_top
