@@ -55,8 +55,8 @@
 ┌─────────────────────────────┐
 │  FCO Alignment Monitor      │  ← בדיקת יישור מילים
 │                             │
-│  • בודק גבולות דגימה            │
-│  • מזהה החלקות               │
+│                             │
+│                             │
 │                             │
 │  outputs:                   │
 │   aligned                   │
@@ -76,30 +76,3 @@
                │ data stream
                ▼
 
-====================  SYSTEM CLOCK DOMAIN (sys_clk)  =================
-
-┌─────────────────────────────┐
-│   Stream Output Logic       │
-│                             │
-│  m_valid / m_ready          │
-│  m_data[15:0]               │
-│                             │
-│  backpressure safe          │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│ Trigger + Snapshot Engine   │
-│                             │
-│  • circular buffer          │
-│  • pre / post trigger       │
-│                             │
-│  snap_ready / overrun       │
-└──────────────┬──────────────┘
-               │
-               ▼
-┌─────────────────────────────┐
-│   Timestamp Counter         │
-│                             │
-│  free-running sys_clk time  │
-└─────────────────────────────┘
