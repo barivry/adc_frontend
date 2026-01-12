@@ -24,22 +24,15 @@ module lane_bitslip #(
     always_ff @(posedge dco_clk or negedge rst_n) begin
         if (!rst_n) begin
             slip_offset <= '0;
-        end else begin
-            slip_offset <= slip_offset ^ bitslip_pulse; 
-    end
-
-    
-    always_ff @(posedge dco_clk or negedge rst_n) begin
-        if (!rst_n) begin
             rise_hold <= '0;
             out_rise  <= '0;
         end else begin
+            slip_offset <= slip_offset ^ bitslip_pulse; 
             rise_hold <= in_rise;
-
-            
             out_rise <= (slip_offset) ? prev_fall : in_rise;
         end
     end
+
 
     
     always_ff @(negedge dco_clk or negedge rst_n) begin
@@ -54,5 +47,6 @@ module lane_bitslip #(
             prev_fall <= in_fall;
         end
     end
+
 
 endmodule

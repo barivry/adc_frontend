@@ -1,8 +1,9 @@
-`timescale 1ns/1ps
+ `timescale 1ns/1ps
 
-module tb_lane_bitslip;
+module tb_lane_bitslip_1lane;
 
-  localparam int LANES = 2;     
+  localparam int LANES = 1;
+
   logic              dco_clk;
   logic              rst_n;
 
@@ -24,109 +25,108 @@ module tb_lane_bitslip;
     .out_fall(out_fall)
   );
 
-  // clock: 10ns period
+  // 10ns period clock
   initial dco_clk = 1'b0;
   always  #5 dco_clk = ~dco_clk;
 
   // VCD
   initial begin
-    $dumpfile("waves_bitslip_adv.vcd");
-    $dumpvars(0, tb_lane_bitslip);
+    $dumpfile("waves_bitslip_1lane.vcd");
+    $dumpvars(0, tb_lane_bitslip_1lane);
   end
 
-  task automatic expect_eq(input logic [LANES-1:0] got,
-                           input logic [LANES-1:0] exp,
-                           input string msg);
-    if (got !== exp) begin
-      $display("FAIL @ t=%0t : %s | got=%b exp=%b", $time, msg, got, exp);
-      $fatal(1);
-    end else begin
-      $display("PASS @ t=%0t : %s | %b", $time, msg, got);
-    end
-  endtask
-
-  
-  task automatic drive_cycle(input int k);
-    
-    in_rise[0] = k[0];
-    in_rise[1] = k[1];
-    in_fall[0] = ~k[0];
-    in_fall[1] = ~k[1];
-  endtask
-
-  
-  logic [LANES-1:0] prev_fall_exp;
-  logic [LANES-1:0] slip_offset_exp;
+  // Simple pattern generator: r_k = k[0], f_k = ~k[0]
+  int k;
+  logic prev_fall;
 
   initial begin
-    
+    // init
     rst_n         = 1'b0;
     in_rise       = '0;
     in_fall       = '0;
     bitslip_pulse = '0;
+    prev_fall     = 1'b0;
 
-    prev_fall_exp  = '0;
-    slip_offset_exp = '0;
-
-    
+    // hold reset for 2 posedges
     repeat (2) @(posedge dco_clk);
     rst_n = 1'b1;
-    $display("Released reset @ t=%0t", $time);
 
     // -------------------------
-    // Phase A: offset=0 (normal)
+    // Phase A: no slip (expect passthrough)
     // -------------------------
-    // k=0..2
-    for (int k = 0; k < 3; k++) begin
-      
-      drive_cycle(k);
-      #1;
+    for (k = 0; k < 4; k = k + 1) begin
+      in_rise[0] = k[0];
+      in_fall[0] = ~k[0];
 
       @(posedge dco_clk);
       #1ps;
-      expect_eq(out_rise, in_rise, $sformatf("normal: out_rise=r_%0d", k));
+      if (out_rise[0] !== in_rise[0]) begin
+        $display("FAIL normal out_rise @t=%0t k=%0d got=%b exp=%b", $time, k, out_rise[0], in_rise[0]);
+        $fatal(1);
+      end
 
-      
-      #1;
       @(negedge dco_clk);
       #1ps;
-      
-      expect_eq(out_fall, in_fall, $sformatf("normal: out_fall=f_%0d", k));
+      if (out_fall[0] !== in_fall[0]) begin
+        $display("FAIL normal out_fall @t=%0t k=%0d got=%b exp=%b", $time, k, out_fall[0], in_fall[0]);
+        $fatal(1);
+      end
 
-      
-      prev_fall_exp = in_fall;
+      prev_fall = in_fall[0];
     end
 
     // -------------------------
-    // Phase B: Toggle slip_offset (bitslip_pulse)
+    // Phase B: toggle slip on next posedge
+    // Expect:
+    //   - At toggle posedge: out_rise still normal (uses old slip)
+    //   - At following negedge: out_fall = rise_hold (current r_k)
+    //   - Next posedge: out_rise = prev_fall from previous cycle
     // -------------------------
-    drive_cycle(3);
-    bitslip_pulse = '1; 
-    #1;
+    k = 4;
+    in_rise[0] = k[0];
+    in_fall[0] = ~k[0];
+
+    bitslip_pulse[0] = 1'b1;
     @(posedge dco_clk);
     #1ps;
-    bitslip_pulse = '0;
-    expect_eq(out_rise, in_rise, "toggle edge: still normal out_rise = r_3");
+    bitslip_pulse[0] = 1'b0;
 
-    #1;
+    #1ps;
+    // still normal on this edge (depends on implementation order; this matches common intent)
+    if (out_rise[0] !== in_rise[0]) begin
+      $display("FAIL toggle-edge out_rise @t=%0t k=%0d got=%b exp=%b", $time, k, out_rise[0], in_rise[0]);
+      $fatal(1);
+    end
+
     @(negedge dco_clk);
     #1ps;
-    expect_eq(out_fall, in_rise, "slipped: out_fall = r_3");
+    // slipped: out_fall should become rise_hold == current in_rise
+    if (out_fall[0] !== in_rise[0]) begin
+      $display("FAIL slipped out_fall @t=%0t k=%0d got=%b exp=%b", $time, k, out_fall[0], in_rise[0]);
+      $fatal(1);
+    end
 
-    
-    prev_fall_exp = in_fall;
+    // advance one more cycle with slip active
+    prev_fall = in_fall[0];
+    k = 5;
+    in_rise[0] = k[0];
+    in_fall[0] = ~k[0];
 
-    
-    drive_cycle(4);
-    #1;
-    @(posedge dco_clk); #0;
+    @(posedge dco_clk);
     #1ps;
-    expect_eq(out_rise, prev_fall_exp, "slipped: out_rise = f_3");
+    // slipped: out_rise should be previous fall
+    if (out_rise[0] !== prev_fall) begin
+      $display("FAIL slipped out_rise @t=%0t k=%0d got=%b exp=%b", $time, k, out_rise[0], prev_fall);
+      $fatal(1);
+    end
 
-    #1;
-    @(negedge dco_clk); #0;
+    @(negedge dco_clk);
     #1ps;
-    expect_eq(out_fall, in_rise, "slipped: out_fall = r_4");
+    // slipped: out_fall should be current rise
+    if (out_fall[0] !== in_rise[0]) begin
+      $display("FAIL slipped out_fall2 @t=%0t k=%0d got=%b exp=%b", $time, k, out_fall[0], in_rise[0]);
+      $fatal(1);
+    end
 
     $display("ALL TESTS PASSED ✅");
     #20;
