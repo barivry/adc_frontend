@@ -7,8 +7,8 @@ module lane_bitslip #(
     input  logic              dco_clk,
     input  logic              rst_n,           // active-low reset
 
-    input  logic [LANES-1:0]  in_rise,         // from DDR capture (posedge)
-    input  logic [LANES-1:0]  in_fall,         // from DDR capture (negedge)
+    input  logic [LANES-1:0]  bit_rise,         // from DDR capture (posedge)
+    input  logic [LANES-1:0]  bit_fall,         // from DDR capture (negedge)
 
     input  logic [LANES-1:0]  bitslip_pulse,   // toggle request (pulse), synchronous to dco_clk
 
@@ -28,8 +28,8 @@ module lane_bitslip #(
             out_rise  <= '0;
         end else begin
             slip_offset <= slip_offset ^ bitslip_pulse; 
-            rise_hold <= in_rise;
-            out_rise <= (slip_offset) ? prev_fall : in_rise;
+            rise_hold <= bit_rise;
+            out_rise <= (slip_offset) ? prev_fall : bit_rise;
         end
     end
 
@@ -41,10 +41,10 @@ module lane_bitslip #(
             out_fall  <= '0;
         end else begin
           
-            out_fall <= (slip_offset) ? rise_hold : in_fall;
+            out_fall <= (slip_offset) ? rise_hold : bit_fall;
 
             
-            prev_fall <= in_fall;
+            prev_fall <= bit_fall;
         end
     end
 

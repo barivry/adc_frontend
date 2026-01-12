@@ -18,8 +18,8 @@ module tb_lane_bitslip_1lane;
   lane_bitslip #(.LANES(LANES)) dut (
     .dco_clk(dco_clk),
     .rst_n(rst_n),
-    .in_rise(in_rise),
-    .in_fall(in_fall),
+    .bit_rise(in_rise),
+    .bit_fall(in_fall),
     .bitslip_pulse(bitslip_pulse),
     .out_rise(out_rise),
     .out_fall(out_fall)
