@@ -41,8 +41,8 @@ module adc_lvds_frontend_top #(
   word_assembler #(.LANES(LANES)) u_asm (
     .clk       (dco_clk),
     .rst_n     (rst_n),
-    .in_rise   (rise),
-    .in_fall   (fall),
+    .bit_rise   (rise),
+    .bit_fall   (fall),
     .word      (word_dco),
     .word_valid(word_valid_dco)
   );
