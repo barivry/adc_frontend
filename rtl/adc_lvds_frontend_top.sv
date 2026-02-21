@@ -4,6 +4,10 @@ module adc_lvds_frontend_top #(
   parameter int LANES      = 8,
   parameter int FIFO_DEPTH = 1024
 )(
+  //csr registers
+ 
+  input  logic [31:0] snap_len,
+  output logic        snapshot_done,
   // ADC / capture domain
   input  logic               dco_clk,
   input  logic               rst_n,
@@ -13,6 +17,10 @@ module adc_lvds_frontend_top #(
   // System / output domain
   input  logic               sys_clk,
   input  logic               sys_rst_n,
+
+  // NEW: stream enable (from TB/snapshot/CSR)
+  input  logic               stream_enable,
+
   input  logic               out_ready,
   output logic [2*LANES-1:0] out_word,
   output logic               out_valid,
@@ -36,7 +44,7 @@ module adc_lvds_frontend_top #(
   // Backpressure (DCO domain)
   // ----------------------------
   logic stall_dco;
-  assign stall_dco = fifo_full;   // עצירה נקייה כשה-FIFO מלא
+  assign stall_dco = fifo_full;
 
   // ----------------------------
   // FIFO -> AXIS internal wires (sys_clk domain)
@@ -67,7 +75,7 @@ module adc_lvds_frontend_top #(
   word_assembler #(.LANES(LANES)) u_asm (
     .dco_clk     (dco_clk),
     .rst_n       (rst_n),
-    .stall       (stall_dco),     // <<< התיקון המרכזי
+    .stall       (stall_dco),
     .bit_rise    (rise),
     .bit_fall    (fall),
     .sample_word (word_dco),
@@ -84,7 +92,7 @@ module adc_lvds_frontend_top #(
     .dco_clk         (dco_clk),
     .rst_n           (rst_n),
     .fco_in          (lvds_fco),
-    .word_valid      (word_valid_dco), // נספר רק מילים שנוצרו באמת
+    .word_valid      (word_valid_dco),
     .aligned         (aligned),
     .align_pulse     (),
     .align_err_pulse (),
@@ -100,7 +108,7 @@ module adc_lvds_frontend_top #(
   ) u_fifo (
     .wr_clk   (dco_clk),
     .wr_rst_n (rst_n),
-    .wr_en    (word_valid_dco && aligned && !fifo_full), // <<< הגנה כפולה
+    .wr_en    (word_valid_dco && aligned && !fifo_full),
     .wr_data  (word_dco),
     .wr_full  (fifo_full),
 
@@ -119,7 +127,7 @@ module adc_lvds_frontend_top #(
     .sys_clk       (sys_clk),
     .sys_rst_n     (sys_rst_n),
 
-    .enable        (1'b1),        // תמיד מאופשר בשלב זה
+    .enable        (stream_enable),  // <<< NEW
     .aligned       (aligned),
 
     .fifo_rd_data  (fifo_rd_data),
@@ -135,11 +143,11 @@ module adc_lvds_frontend_top #(
   // ----------------------------
   // Top outputs
   // ----------------------------
-  assign out_valid  = axis_valid;
-  assign axis_ready = out_ready;
-  assign out_word   = axis_data;
-  assign stall_dco_dbg = stall_dco;
+  assign out_valid      = axis_valid;
+  assign axis_ready     = out_ready;
+  assign out_word       = axis_data;
 
+  assign stall_dco_dbg      = stall_dco;
   assign word_valid_dco_dbg = word_valid_dco;
 
 endmodule
