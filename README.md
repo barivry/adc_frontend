@@ -192,9 +192,17 @@ vvp sim/sim_top +TEST=prbs
 
 Expected:
 ```
-SNAPSHOT PASS ✅ samples=4096
+SNAPSHOT PASS ✅ samples=6304
+```
+### Run FCO Alignment Lock & Glitch Handling Test
+```
+vvp sim/sim_top +TEST=fco_glitch
 ```
 
+Expected:
+```
+SNAPSHOT PASS ✅ samples=6304
+```
 ---
 
 ## Waveforms
