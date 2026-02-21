@@ -1,238 +1,231 @@
 # ADC Sample Capture Front-End (LVDS DDR)
 
 ## Overview
-This repository implements an **industry‑realistic LVDS DDR ADC capture front‑end** targeted at FPGA‑based instrumentation and quantum‑readout systems. The design captures high‑speed LVDS data on **both edges of a source‑synchronous clock (DDR)**, assembles correctly ordered samples, monitors alignment using a frame clock (FCO), and safely transfers data into the system clock domain via an asynchronous FIFO.
+This repository implements an LVDS DDR ADC capture front-end:
 
-The project is designed to be **bring‑up ready**:
-- Clear, frozen assumptions and bit mapping
-- Clean RTL hierarchy
-- Self‑checking SystemVerilog testbench
-- Regression‑ready simulation flow
-- Evidence waveforms for correctness and determinism
-
----
-
-## Key Features
-- **LVDS DDR capture** (rising + falling edges of DCO)
-- **8 data lanes → 16 bits per DCO cycle**
-- **Deterministic word assembly** with documented bit ordering
-- **FCO‑based alignment monitoring** and error detection
-- **Per‑lane deskew controls** (edge swap + 1‑bit bitslip)
-- **Safe CDC** using async FIFO (DCO → system clock)
-- **AXI‑Stream‑like output interface** with backpressure handling
-- **Instrumentation / quantum‑grade options**:
-  - Deterministic latency mode
-  - Trigger + snapshot buffer (pre/post samples)
-  - Timestamping
+- Captures LVDS data on **both clock edges** (DDR)
+- Assembles **16-bit words** from 8 LVDS lanes
+- Uses FCO for word alignment
+- Crosses clock domains using an async FIFO
+- Streams data using an AXI-Stream-like interface with backpressure
+- Supports **snapshot capture windows** controlled by trigger + CSR
+- Includes a **self-checking SystemVerilog testbench** with:
+  - Ramp stimulus
+  - PRBS stimulus
+  - Golden model reconstruction
+  - Scoreboard with pass/fail
 
 ---
 
-## Target Use‑Case
-High‑speed **ADC LVDS DDR capture into an FPGA**, followed by safe transfer into the system clock domain and clean streaming to downstream processing logic.
+## Output Word Format (Project Requirement)
 
-The design follows a **Xilinx 7‑Series‑style flow** (IBUFDS + IDDR). For simulation, vendor primitives are replaced by behavioral models.
+Each output word is **16 bits**:
 
----
-
-## Frozen Configuration (Locked)
-These parameters are fixed and enforced in RTL, TB, and verification:
-
-- **ADC sample width:** 14 bits (unsigned, straight binary)
-- **LVDS data lanes:** 8
-- **DDR capture:** 2 bits per lane per DCO cycle → 16 bits total
-- **Output word format:**
-  - `sample_word[13:0]` = ADC sample
-  - `sample_word[15:14]` = `2'b00` (reserved)
-- **Frame clock:** FCO present and required
-- **CDC policy:** async FIFO (DCO clock → system clock)
-- **Streaming interface:** AXI‑Stream‑like (`m_valid`, `m_ready`, `m_data[15:0]`)
-
----
-
-## Bit Mapping (Locked)
-For lane `i ∈ [0..7]`:
-
-- Capture `bit_rise[i]` on **DCO rising edge**
-- Capture `bit_fall[i]` on **DCO falling edge**
-
-Assemble one word per full DCO cycle:
 ```
-word[2*i]   = bit_rise[i]
-word[2*i+1] = bit_fall[i]
+[15:14] = 2'b00   // RESERVED – MUST always be zero
+[13:0]  = ADC sample data
 ```
 
-Final output word:
-```
-sample[13:0] = word[13:0]
-word[15:14]  = 2'b00
-```
-
-This mapping is **documented, verified, and asserted** in the testbench.
+This requirement is enforced in:
+- Testbench stimulus generation
+- Golden model comparison
+- Scoreboard checking
 
 ---
 
-## Clock Domains
-- **dco_clk** – source‑synchronous clock from ADC (capture domain)
-- **sys_clk** – system / fabric clock (processing + output domain)
+## RTL Structure
 
----
-
-## Alignment & Deskew
-### FCO Alignment Monitor
-- Waits for stable FCO behavior at startup
-- Asserts `aligned` once lock is achieved
-- Detects runtime FCO violations
-- Increments `align_err_cnt`
-- Optional policy to deassert `aligned` on errors
-
-### Per‑Lane Deskew (Practical / Industry‑Style)
-- `swap_edges[i]` – swap rising/falling edge assignment
-- `bitslip[i]` – 1‑bit slip to correct half‑cycle ambiguity
-
-Calibration is performed in **training mode** using a known pattern supplied by the testbench or external controller.
-
----
-
-## External Interfaces
-### Clocks & Reset
-- `input  logic sys_clk`
-- `input  logic sys_rst_n` (active‑low)
-- `input  logic dco_clk`
-
-### LVDS Inputs (Logical‑Level for Simulation)
-- `input logic [7:0] lvds_data`
-- `input logic       fco`
-
-*(Synthesis wrappers may replace these with IBUFDS ports.)*
-
-### Control / Status (CSR‑like)
-**Inputs:**
-- `enable`
-- `train_mode`
-- `swap_edges[7:0]`
-- `bitslip[7:0]`
-- `clear_counters`
-- Trigger controls (`trig_arm`, `trig_source`, optional `trig_level`)
-
-**Outputs / Status:**
-- `aligned`
-- `align_err_cnt`
-- `fifo_ovf_cnt`
-- `samples_dropped_cnt`
-- `timestamp`
-- Snapshot status (`snap_ready`, `snap_overrun`)
-
-### Streaming Output
-AXI‑Stream‑like interface:
-- `output logic        m_valid`
-- `input  logic        m_ready`
-- `output logic [15:0] m_data`
-
-Optional sideband (`m_user`) may include alignment flags, timestamps, or sample index.
-
----
-
-## Functional Block Diagram (Concept)
-```
-LVDS DDR Capture (dco_clk)
-   → Word Assembly + Deskew
-   → FCO Alignment Monitor
-   → Async FIFO (CDC)
-   → Stream Out + Trigger/Snapshot (sys_clk)
-```
-
----
-
-## Deterministic Latency Mode
-When enabled:
-- Pipeline stages and FIFO behavior are constrained
-- End‑to‑end latency is **fixed and documented** in sys_clk cycles
-- Testbench verifies identical input edges produce identical output latency (±0 cycles)
-
-This mode is intended for **quantum / instrumentation systems** where timing determinism is critical.
-
----
-
-## Trigger & Snapshot Buffer
-- Circular buffer in sys_clk domain
-  - `PRE_SAMPLES = 1024`
-  - `POST_SAMPLES = 1024`
-- On trigger:
-  - Freeze pre‑samples
-  - Collect post‑samples
-  - Assert `snap_ready`
-- Snapshot can be read via BRAM interface or streamed out
-
----
-
-## Verification Strategy
-### Testbench
-- LVDS stimulus generator (ramp / PRBS / sine LUT)
-- Golden model for expected output stream
-- Error injection (bitslip, edge swap, FCO glitches)
-- Scoreboard + counters
-- Latency and determinism checks
-
-### Minimum Required Tests
-1. Clean capture (smoke test)
-2. Deskew calibration (swap + bitslip)
-3. FCO glitch detection
-4. Backpressure stress (`m_ready` random)
-5. Reset mid‑run recovery
-6. Trigger + snapshot integrity
-7. Deterministic latency verification
-
----
-
-## Running Simulation
-Example (Icarus / Verilator style):
-```bash
-make sim TEST=smoke
-make sim TEST=fco_glitch
-make regress
-```
-
-Waveforms are generated for GTKWave inspection.
-
----
-
-## Repository Structure
 ```
 rtl/
-  adc_lvds_frontend_top.sv
-  ddr_lane_capture.sv
-  word_assembler.sv
-  align_monitor_fco.sv
-  cdc_async_fifo.sv
-  axis_stream_out.sv
-  snapshot_trigger.sv
-  csr_regs.sv
-
-sim/
-  tb_adc_lvds_frontend.sv
-  Makefile
-  run_regress.py (optional)
-
-docs/
-  block_diagram.png
-  timing_notes.md
-  evidence_waveforms/
+├── adc_lvds_frontend_top.sv   # Top-level integration
+├── ddr_lane_capture.sv        # DDR capture (posedge/negedge)
+├── word_assembler.sv          # Builds 16-bit word, forces [15:14]=0
+├── align_monitor_fco.sv       # FCO-based alignment detection
+├── cdc_async_fifo.sv          # Async FIFO (dco_clk → sys_clk)
+├── axis_stream_out.sv         # AXI-stream output stage
+├── snapshot_trigger.sv        # Snapshot window controller
+└── csr_regs.sv                # Control/status registers
 ```
 
 ---
 
-## Known Limitations
-- Deskew is digital (no analog delay taps)
-- Behavioral LVDS models used in simulation
-- Synthesis wrappers are FPGA‑family specific
+## Snapshot Mechanism
+
+### snapshot_trigger.sv
+Controls capture windows:
+
+- Inputs:
+  - `trigger` – 1-cycle pulse
+  - `snap_len` – number of samples
+- Counts accepted AXI beats (`valid && ready`)
+- Outputs:
+  - `snapshot_enable` – high during capture
+  - `snapshot_done` – 1-cycle pulse at completion
+
+### Stream Enable Gating
+Streaming is enabled only when:
+
+```
+stream_enable = snapshot_enable && csr_stream_enable
+```
 
 ---
 
-## License
-MIT (or project‑specific license)
+## CSR Interface
+
+| Address | Register | Description |
+|-------:|---------|-------------|
+| 0x0 | CTRL | bit0 = stream_enable |
+| 0x4 | SNAP_LEN | Snapshot length |
+
+The testbench programs these registers after reset.
+
+---
+
+## Testbench
+
+File:
+```
+tb/tb_adc_frontend_top.sv
+```
+
+The testbench is **fully self-checking**.
+
+### Supported Tests (plusargs)
+
+- `+TEST=smoke`
+  - Ramp stimulus
+  - Snapshot length = 6304
+- `+TEST=prbs`
+  - PRBS16 stimulus
+  - Snapshot length = 4096
+
+---
+
+## Stimulus Types
+
+### Ramp
+Monotonic counter, masked to enforce:
+
+```
+word[15:14] = 2'b00
+```
+
+### PRBS
+PRBS16 generator using polynomial:
+
+```
+x^16 + x^14 + x^13 + x^11 + 1
+```
+
+Upper bits are forced:
+
+```
+word[15:14] = 2'b00
+```
+
+---
+
+## Golden Model
+
+Golden model reconstructs expected output:
+
+```
+golden_word = { 2'b00, raw_word[13:0] }
+```
+
+If lane mapping or bit order changes, **only the golden model must be updated**.
+
+---
+
+## Scoreboard
+
+- Expected words are enqueued only when DUT writes:
+  ```
+  aligned && word_valid_dco && !stall
+  ```
+- Comparison happens only on AXI handshake:
+  ```
+  out_valid && out_ready
+  ```
+- Any mismatch causes immediate failure
+- Snapshot completes only if:
+  ```
+  rd_cnt == snap_len
+  ```
+
+---
+
+## Running Simulations
+
+### Compile
+```
+mkdir -p sim
+
+iverilog -g2012 -Wall -o sim/sim_top \
+  tb/tb_adc_frontend_top.sv \
+  rtl/ddr_lane_capture.sv \
+  rtl/word_assembler.sv \
+  rtl/align_monitor_fco.sv \
+  rtl/cdc_async_fifo.sv \
+  rtl/axis_stream_out.sv \
+  rtl/snapshot_trigger.sv \
+  rtl/csr_regs.sv \
+  rtl/adc_lvds_frontend_top.sv
+```
+
+### Run Smoke Test (Ramp)
+```
+vvp sim/sim_top +TEST=smoke
+```
+
+Expected:
+```
+SNAPSHOT PASS ✅ samples=6304
+```
+
+### Run PRBS Test
+```
+vvp sim/sim_top +TEST=prbs
+```
+
+Expected:
+```
+SNAPSHOT PASS ✅ samples=4096
+```
+
+---
+
+## Waveforms
+
+The testbench generates:
+```
+waves_top.vcd
+```
+
+View with:
+```
+gtkwave waves_top.vcd
+```
+
+---
+
+## Acceptance Criteria (P0)
+
+- `+TEST=smoke` passes with **0 mismatches**
+- `+TEST=prbs` passes with **0 mismatches**
+- Snapshot length equals programmed `snap_len`
+- Output format always satisfies:
+  ```
+  [15:14] = 2'b00
+  ```
 
 ---
 
 ## Status
-Actively developed. Contributions, issues, and review comments are welcome.
 
+- DDR capture verified
+- Snapshot + CSR verified
+- Ramp stimulus verified
+- PRBS stimulus verified
+- Golden model + scoreboard active
