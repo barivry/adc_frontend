@@ -4,32 +4,55 @@ module adc_lvds_frontend_top #(
   parameter int LANES      = 8,
   parameter int FIFO_DEPTH = 1024
 )(
-  
+  // ADC / capture domain
   input  logic               dco_clk,
   input  logic               rst_n,
   input  logic [LANES-1:0]   lvds_data,
   input  logic               lvds_fco,
 
-  
+  // System / output domain
   input  logic               sys_clk,
   input  logic               sys_rst_n,
   input  logic               out_ready,
   output logic [2*LANES-1:0] out_word,
   output logic               out_valid,
 
-  
+  // Status
   output logic               aligned,
 
-  
-  output logic               word_valid_dco_dbg
+  // Debug
+  output logic               word_valid_dco_dbg,
+  output logic               stall_dco_dbg
 );
 
   logic [LANES-1:0]   rise, fall;
   logic [2*LANES-1:0] word_dco;
   logic               word_valid_dco;
 
+  // FIFO flags
   logic fifo_full, fifo_empty;
 
+  // ----------------------------
+  // Backpressure (DCO domain)
+  // ----------------------------
+  logic stall_dco;
+  assign stall_dco = fifo_full;   // עצירה נקייה כשה-FIFO מלא
+
+  // ----------------------------
+  // FIFO -> AXIS internal wires (sys_clk domain)
+  // ----------------------------
+  logic [2*LANES-1:0] fifo_rd_data;
+  logic               fifo_rd_valid;
+  logic               fifo_rd_en;
+
+  // AXIS internal wires
+  logic               axis_valid;
+  logic               axis_ready;
+  logic [2*LANES-1:0] axis_data;
+
+  // ----------------------------
+  // DDR capture
+  // ----------------------------
   ddr_lane_capture #(.LANES(LANES)) u_cap (
     .dco_clk(dco_clk),
     .rst_n  (rst_n),
@@ -38,47 +61,84 @@ module adc_lvds_frontend_top #(
     .fall   (fall)
   );
 
+  // ----------------------------
+  // Word assembler WITH stall
+  // ----------------------------
   word_assembler #(.LANES(LANES)) u_asm (
-    .clk       (dco_clk),
-    .rst_n     (rst_n),
-    .bit_rise   (rise),
-    .bit_fall   (fall),
-    .word      (word_dco),
-    .word_valid(word_valid_dco)
+    .dco_clk     (dco_clk),
+    .rst_n       (rst_n),
+    .stall       (stall_dco),     // <<< התיקון המרכזי
+    .bit_rise    (rise),
+    .bit_fall    (fall),
+    .sample_word (word_dco),
+    .word_valid  (word_valid_dco)
   );
 
+  // ----------------------------
+  // Alignment monitor
+  // ----------------------------
   align_monitor_fco #(
     .EXPECT_PERIOD(16),
     .LOCK_COUNT(4)
   ) u_align (
-    .dco_clk(dco_clk),
-    .rst_n  (rst_n),
-    .fco_in (lvds_fco),
-    .word_valid(word_valid_dco),
-    .aligned(aligned),
-    .align_pulse(),
-    .align_err_pulse(),
-    .err_count()
+    .dco_clk         (dco_clk),
+    .rst_n           (rst_n),
+    .fco_in          (lvds_fco),
+    .word_valid      (word_valid_dco), // נספר רק מילים שנוצרו באמת
+    .aligned         (aligned),
+    .align_pulse     (),
+    .align_err_pulse (),
+    .err_count       ()
   );
 
-  
+  // ----------------------------
+  // Async FIFO (CDC)
+  // ----------------------------
   cdc_async_fifo #(
     .WIDTH(2*LANES),
     .DEPTH(FIFO_DEPTH)
   ) u_fifo (
-    .wr_clk  (dco_clk),
-    .wr_rst_n(rst_n),
-    .wr_en   (word_valid_dco && aligned),
-    .wr_data (word_dco),
-    .wr_full (fifo_full),
+    .wr_clk   (dco_clk),
+    .wr_rst_n (rst_n),
+    .wr_en    (word_valid_dco && aligned && !fifo_full), // <<< הגנה כפולה
+    .wr_data  (word_dco),
+    .wr_full  (fifo_full),
 
-    .rd_clk  (sys_clk),
-    .rd_rst_n(sys_rst_n),
-    .rd_en   (out_ready),
-    .rd_data (out_word),
-    .rd_valid(out_valid),
-    .rd_empty(fifo_empty)
+    .rd_clk   (sys_clk),
+    .rd_rst_n (sys_rst_n),
+    .rd_en    (fifo_rd_en),
+    .rd_data  (fifo_rd_data),
+    .rd_valid (fifo_rd_valid),
+    .rd_empty (fifo_empty)
   );
+
+  // ----------------------------
+  // AXI-stream output stage
+  // ----------------------------
+  axis_stream_out u_axis (
+    .sys_clk       (sys_clk),
+    .sys_rst_n     (sys_rst_n),
+
+    .enable        (1'b1),        // תמיד מאופשר בשלב זה
+    .aligned       (aligned),
+
+    .fifo_rd_data  (fifo_rd_data),
+    .fifo_rd_valid (fifo_rd_valid),
+    .fifo_rd_empty (fifo_empty),
+    .fifo_rd_en    (fifo_rd_en),
+
+    .m_valid       (axis_valid),
+    .m_ready       (axis_ready),
+    .m_data        (axis_data)
+  );
+
+  // ----------------------------
+  // Top outputs
+  // ----------------------------
+  assign out_valid  = axis_valid;
+  assign axis_ready = out_ready;
+  assign out_word   = axis_data;
+  assign stall_dco_dbg = stall_dco;
 
   assign word_valid_dco_dbg = word_valid_dco;
 
