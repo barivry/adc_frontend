@@ -6,7 +6,8 @@ module word_assembler #(
   input  logic               dco_clk,
   input  logic               rst_n,
 
-  // NEW: backpressure from FIFO
+  // keep port for now (so top doesn't need edits),
+  // but we intentionally DO NOT use it to stop word production.
   input  logic               stall,
 
   input  logic [LANES-1:0]   bit_rise,
@@ -21,23 +22,18 @@ module word_assembler #(
     if (!rst_n) begin
       sample_word <= '0;
       word_valid  <= 1'b0;
-
-    end else if (!stall) begin
-      // 정상 동작: מייצרים מילה חדשה
-      for (i = 0; i < LANES-1; i++) begin
+    end else begin
+      // ALWAYS assemble a new word each DCO cycle
+      for (i = 0; i < LANES; i++) begin
         sample_word[2*i]   <= bit_rise[i];
         sample_word[2*i+1] <= bit_fall[i];
       end
 
-      // שמירת ה־2 ביטים העליונים כ־0 (כמו אצלך)
+      // reserved MSBs = 0 (for LANES=8 -> [15:14]=0)
       sample_word[2*LANES-1 -: 2] <= 2'b00;
 
+      // "a new ADC word exists" every cycle
       word_valid <= 1'b1;
-
-    end else begin
-      // stall: לא מייצרים דגימה חדשה
-      word_valid <= 1'b1;
-      // sample_word נשאר כפי שהוא (hold)
     end
   end
 

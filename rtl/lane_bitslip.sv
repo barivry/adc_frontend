@@ -29,7 +29,7 @@ module lane_bitslip #(
         end else begin
             slip_offset <= slip_offset ^ bitslip_pulse; 
             rise_hold <= bit_rise;
-            out_rise <= (slip_offset) ? prev_fall : bit_rise;
+            out_rise <= (slip_offset & prev_fall) | (~slip_offset & bit_rise);
         end
     end
 
@@ -41,7 +41,7 @@ module lane_bitslip #(
             out_fall  <= '0;
         end else begin
           
-            out_fall <= (slip_offset) ? rise_hold : bit_fall;
+            out_fall <= (slip_offset & rise_hold) | (~slip_offset & bit_fall);
 
             
             prev_fall <= bit_fall;
