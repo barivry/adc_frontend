@@ -77,6 +77,7 @@ stream_enable = snapshot_enable && csr_stream_enable
 |-------:|---------|-------------|
 | 0x0 | CTRL | bit0 = stream_enable |
 | 0x4 | SNAP_LEN | Snapshot length |
+| 0x8 | STATUS | bit0 = snapshot done |
 
 The testbench programs these registers after reset.
 
