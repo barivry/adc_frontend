@@ -12,7 +12,7 @@ module tb_adc_frontend_top;
 
   // Default snapshot lengths per test
   localparam int SMOKE_SNAP_LEN = 6304;
-  localparam int PRBS_SNAP_LEN  = 4096;
+  localparam int PRBS_SNAP_LEN  = 6304;
 
   // =========================================================
   // Clocks / Reset
@@ -59,6 +59,8 @@ module tb_adc_frontend_top;
   // CSR outputs (separate signals)
   logic        csr_stream_enable;
   logic [31:0] csr_snap_len;
+  logic [7:0]  csr_align_lock_n;
+  logic        csr_align_deassert_on_err;
 
   // =========================================================
   // TEST selection: +TEST=smoke / +TEST=prbs
@@ -84,6 +86,9 @@ module tb_adc_frontend_top;
 
     .stream_enable  (csr_stream_enable),
     .snap_len       (csr_snap_len),
+
+    .align_lock_n          (csr_align_lock_n),
+    .align_deassert_on_err (csr_align_deassert_on_err),
 
     .snapshot_done  (snapshot_done)
   );
@@ -114,6 +119,10 @@ module tb_adc_frontend_top;
 
     // DUT gets snap_len from CSR
     .snap_len          (csr_snap_len),
+
+    // Alignment controls from CSR
+    .align_lock_n          (csr_align_lock_n),
+    .align_deassert_on_err (csr_align_deassert_on_err),
 
     .stall_dco_dbg     (stall_dco_dbg)
   );
@@ -171,6 +180,7 @@ module tb_adc_frontend_top;
       if ($value$plusargs("TEST=%s", s)) begin
         if (s == "smoke") return TEST_SMOKE;
         if (s == "prbs")  return TEST_PRBS;
+        if (s == "fco_glitch") return TEST_SMOKE; // run like smoke but inject glitch
       end
       return TEST_SMOKE; // default
     end
@@ -213,6 +223,9 @@ module tb_adc_frontend_top;
     end else begin
       csr_write(4'h4, SMOKE_SNAP_LEN);
     end
+
+    // program ALIGN_CFG: lock_n=16, deassert_on_err=1
+    csr_write(4'hC, {23'b0, 1'b1, 8'd16});
 
     // arm stream_enable
     csr_write(4'h0, 32'h1);
@@ -341,16 +354,31 @@ module tb_adc_frontend_top;
   // =========================================================
   // FCO generation (based on word_valid)
   // =========================================================
+  // IMPORTANT:
+  // Drive lvds_fco on the *negedge* so it's stable before the DUT samples it
+  // on the posedge. Driving it on the same posedge can cause the DUT to miss
+  // the pulse due to NBA scheduling order.
   int unsigned fco_cnt;
 
-  always @(posedge dco_clk or negedge rst_n) begin
+  // Glitch injection control (TB)
+  logic glitch_pending;
+  initial glitch_pending = 1'b0;
+
+  always @(negedge dco_clk or negedge rst_n) begin
     if (!rst_n) begin
       fco_cnt  <= 0;
       lvds_fco <= 1'b0;
     end else begin
+      // default low; a pulse will be held until the next negedge update
       lvds_fco <= 1'b0;
       if (word_valid_dco) begin
-        if (fco_cnt == EXPECT_PERIOD-1) begin
+        // Optional: inject one EARLY FCO pulse to induce misalignment
+        // Done once, after we have locked and snapshot started.
+        if (glitch_pending && (fco_cnt == 3)) begin
+          lvds_fco <= 1'b1;
+          fco_cnt  <= 0;       // reset phase so subsequent pulses are clean
+          glitch_pending <= 1'b0;
+        end else if (fco_cnt == EXPECT_PERIOD-1) begin
           lvds_fco <= 1'b1;
           fco_cnt  <= 0;
         end else begin
@@ -378,16 +406,32 @@ module tb_adc_frontend_top;
   // =========================================================
   logic fired_snapshot;
 
+  // Sticky alignment for expected-queue gating (matches RTL aligned_sticky)
+  logic aligned_sticky_tb;
+
+  // IMPORTANT: keep this in the DCO domain (matches DUT)
+  always @(posedge dco_clk or negedge rst_n) begin
+    if (!rst_n) aligned_sticky_tb <= 1'b0;
+    else if (aligned) aligned_sticky_tb <= 1'b1;
+  end
+
   always @(posedge sys_clk or negedge sys_rst_n) begin
     if (!sys_rst_n) begin
       snap_trigger   <= 1'b0;
       fired_snapshot <= 1'b0;
     end else begin
       snap_trigger <= 1'b0;
+
       if (aligned && !aligned_d && !fired_snapshot) begin
         snap_trigger   <= 1'b1;
         fired_snapshot <= 1'b1;
         $display("SNAPSHOT TRIGGER @ t=%0t len=%0d", $time, csr_snap_len);
+
+        // Arm glitch injection only for the dedicated glitch test
+        if ($test$plusargs("TEST=fco_glitch")) begin
+          glitch_pending <= 1'b1;
+          $display("TB: FCO glitch armed @ t=%0t", $time);
+        end
       end
     end
   end
@@ -399,7 +443,8 @@ module tb_adc_frontend_top;
     if (!sys_rst_n) begin
       out_ready <= 1'b0;
     end else begin
-      out_ready <= aligned && snapshot_enable && csr_stream_enable;
+      // Keep streaming even if aligned deasserts due to a violation
+      out_ready <= snapshot_enable && csr_stream_enable;
     end
   end
 
@@ -412,8 +457,57 @@ module tb_adc_frontend_top;
 
   // Enqueue expected when DUT writes into FIFO (same condition as in RTL: aligned & word_valid & !stall)
   always @(negedge dco_clk) begin
-    if (rst_n && aligned && word_valid_dco && !stall_dco_dbg) begin
+    if (rst_n && aligned_sticky_tb && word_valid_dco && !stall_dco_dbg) begin
       exp_q.push_back(golden_model(cur_word_dly));
+    end
+  end
+
+  // =========================================================
+  // Glitch acceptance checks
+  // =========================================================
+  logic [15:0] err_cnt_start;
+  logic        glitch_fired;
+  logic        saw_err;
+  logic        saw_aligned_drop;
+  logic        saw_relock;
+
+  always @(posedge sys_clk or negedge sys_rst_n) begin
+    if (!sys_rst_n) begin
+      err_cnt_start     <= '0;
+      glitch_fired      <= 1'b0;
+      saw_err           <= 1'b0;
+      saw_aligned_drop  <= 1'b0;
+      saw_relock        <= 1'b0;
+    end else begin
+      if (snap_trigger) begin
+        err_cnt_start    <= dut.u_align.err_count;
+        glitch_fired     <= 1'b0;
+        saw_err          <= 1'b0;
+        saw_aligned_drop <= 1'b0;
+        saw_relock       <= 1'b0;
+      end
+
+      if ($test$plusargs("TEST=fco_glitch") && fired_snapshot) begin
+        // Detect that glitch was injected (glitch_pending drops after injection)
+        if (!glitch_pending) glitch_fired <= 1'b1;
+
+        if (glitch_fired && (dut.u_align.err_count > err_cnt_start)) begin
+          if (!saw_err) $display("TB: align_err_cnt incremented (%0d -> %0d) @ t=%0t",
+                                 err_cnt_start, dut.u_align.err_count, $time);
+          saw_err <= 1'b1;
+        end
+
+        if (glitch_fired && !aligned) begin
+          if (!saw_aligned_drop)
+            $display("TB: aligned DEASSERTED on violation @ t=%0t", $time);
+          saw_aligned_drop <= 1'b1;
+        end
+
+        if (glitch_fired && saw_aligned_drop && (aligned && !aligned_d)) begin
+          if (!saw_relock) $display("TB: aligned RE-LOCKED after %0d good frames @ t=%0t", csr_align_lock_n, $time);
+          saw_relock <= 1'b1;
+        end
+      end
     end
   end
 
@@ -447,6 +541,22 @@ module tb_adc_frontend_top;
   always @(posedge sys_clk) begin
     if (snapshot_done) begin
       $display("SNAPSHOT DONE @ t=%0t rd_cnt=%0d exp_q=%0d", $time, rd_cnt, exp_q.size());
+
+      if ($test$plusargs("TEST=fco_glitch")) begin
+        if (!saw_err) begin
+          $display("TB ERROR: expected at least one alignment error (align_err_cnt increment)");
+          $fatal;
+        end
+        if (!saw_aligned_drop) begin
+          $display("TB ERROR: expected aligned to deassert on violation");
+          $fatal;
+        end
+        if (!saw_relock) begin
+          $display("TB ERROR: expected aligned to re-lock after N good frames");
+          $fatal;
+        end
+      end
+
       if (rd_cnt != csr_snap_len) begin
         $display("SNAPSHOT ERROR: expected %0d samples, got %0d", csr_snap_len, rd_cnt);
         $fatal;

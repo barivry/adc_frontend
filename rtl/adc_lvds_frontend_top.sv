@@ -8,6 +8,10 @@ module adc_lvds_frontend_top #(
  
   input  logic [31:0] snap_len,
   output logic        snapshot_done,
+
+  // Alignment controls (from CSR)
+  input  logic [7:0]  align_lock_n,
+  input  logic        align_deassert_on_err,
   // ADC / capture domain
   input  logic               dco_clk,
   input  logic               rst_n,
@@ -39,6 +43,15 @@ module adc_lvds_frontend_top #(
 
   // FIFO flags
   logic fifo_full, fifo_empty;
+
+  // Sticky "ever aligned" flag: once we lock the first time, we keep streaming/writing
+  // even if aligned temporarily deasserts due to a violation.
+  logic aligned_sticky;
+
+  always_ff @(posedge dco_clk or negedge rst_n) begin
+    if (!rst_n) aligned_sticky <= 1'b0;
+    else if (aligned) aligned_sticky <= 1'b1;
+  end
 
   // ----------------------------
   // Backpressure (DCO domain)
@@ -87,12 +100,16 @@ module adc_lvds_frontend_top #(
   // ----------------------------
   align_monitor_fco #(
     .EXPECT_PERIOD(16),
-    .LOCK_COUNT(4)
+    .LOCK_N_DFLT(16)
   ) u_align (
     .dco_clk         (dco_clk),
     .rst_n           (rst_n),
     .fco_in          (lvds_fco),
     .word_valid      (word_valid_dco),
+
+    .lock_n_cfg          (align_lock_n),
+    .deassert_on_err_cfg (align_deassert_on_err),
+
     .aligned         (aligned),
     .align_pulse     (),
     .align_err_pulse (),
@@ -108,7 +125,8 @@ module adc_lvds_frontend_top #(
   ) u_fifo (
     .wr_clk   (dco_clk),
     .wr_rst_n (rst_n),
-    .wr_en    (word_valid_dco && aligned && !fifo_full),
+    // Write only after first lock; keep writing through temporary aligned drops
+    .wr_en    (word_valid_dco && aligned_sticky && !fifo_full),
     .wr_data  (word_dco),
     .wr_full  (fifo_full),
 
@@ -128,7 +146,8 @@ module adc_lvds_frontend_top #(
     .sys_rst_n     (sys_rst_n),
 
     .enable        (stream_enable),  // <<< NEW
-    .aligned       (aligned),
+    // Keep streaming even if aligned temporarily deasserts (status-only)
+    .aligned       (aligned_sticky),
 
     .fifo_rd_data  (fifo_rd_data),
     .fifo_rd_valid (fifo_rd_valid),
